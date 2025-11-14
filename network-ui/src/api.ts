@@ -1,6 +1,6 @@
 import type { Stats, Relationship, Actor, TagCluster } from './types';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001/api';
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'https://epsdtein-doc-explorer.onrender.com/api';
 
 export async function fetchStats(): Promise<Stats> {
   const response = await fetch(`${API_BASE}/stats`);
