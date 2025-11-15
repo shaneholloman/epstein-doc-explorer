@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import NetworkGraph from './components/NetworkGraph';
 import Sidebar from './components/Sidebar';
 import RightSidebar from './components/RightSidebar';
+import MobileBottomNav from './components/MobileBottomNav';
 import { fetchStats, fetchRelationships, fetchActorRelationships, fetchTagClusters } from './api';
 import type { Stats, Relationship, TagCluster } from './types';
 
@@ -94,18 +95,22 @@ function App() {
 
   return (
     <div className="flex h-screen bg-gray-900 text-white">
-      <Sidebar
-        stats={stats}
-        selectedActor={selectedActor}
-        onActorSelect={setSelectedActor}
-        limit={limit}
-        onLimitChange={setLimit}
-        tagClusters={tagClusters}
-        enabledClusterIds={enabledClusterIds}
-        onToggleCluster={toggleCluster}
-      />
+      {/* Desktop Sidebar - hidden on mobile */}
+      <div className="hidden lg:block">
+        <Sidebar
+          stats={stats}
+          selectedActor={selectedActor}
+          onActorSelect={setSelectedActor}
+          limit={limit}
+          onLimitChange={setLimit}
+          tagClusters={tagClusters}
+          enabledClusterIds={enabledClusterIds}
+          onToggleCluster={toggleCluster}
+        />
+      </div>
 
-      <div className="flex-1 relative">
+      {/* Main Graph Area */}
+      <div className="flex-1 relative pb-16 lg:pb-0">
         {loading ? (
           <div className="flex items-center justify-center h-full">
             <div className="text-center">
@@ -122,14 +127,32 @@ function App() {
         )}
       </div>
 
+      {/* Desktop Right Sidebar - hidden on mobile */}
       {selectedActor && (
-        <RightSidebar
-          selectedActor={selectedActor}
-          relationships={actorRelationships}
-          totalRelationships={actorRelationships.length}
-          onClose={() => setSelectedActor(null)}
-        />
+        <div className="hidden lg:block">
+          <RightSidebar
+            selectedActor={selectedActor}
+            relationships={actorRelationships}
+            totalRelationships={actorRelationships.length}
+            onClose={() => setSelectedActor(null)}
+          />
+        </div>
       )}
+
+      {/* Mobile Bottom Navigation - shown only on mobile */}
+      <div className="lg:hidden">
+        <MobileBottomNav
+          stats={stats}
+          selectedActor={selectedActor}
+          onActorSelect={setSelectedActor}
+          limit={limit}
+          onLimitChange={setLimit}
+          tagClusters={tagClusters}
+          enabledClusterIds={enabledClusterIds}
+          onToggleCluster={toggleCluster}
+          relationships={selectedActor ? actorRelationships : relationships}
+        />
+      </div>
     </div>
   );
 }
