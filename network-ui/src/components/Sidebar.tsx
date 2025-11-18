@@ -8,6 +8,10 @@ interface SidebarProps {
   onActorSelect: (actor: string | null) => void;
   limit: number;
   onLimitChange: (limit: number) => void;
+  maxHops: number | null;
+  onMaxHopsChange: (maxHops: number | null) => void;
+  minDensity: number;
+  onMinDensityChange: (density: number) => void;
   tagClusters: TagCluster[];
   enabledClusterIds: Set<number>;
   onToggleCluster: (clusterId: number) => void;
@@ -27,6 +31,10 @@ export default function Sidebar({
   onActorSelect,
   limit,
   onLimitChange,
+  maxHops,
+  onMaxHopsChange,
+  minDensity,
+  onMinDensityChange,
   tagClusters,
   enabledClusterIds,
   onToggleCluster,
@@ -174,12 +182,65 @@ export default function Sidebar({
           <input
             type="range"
             min="100"
-            max="20000"
+            max="25000"
             step="500"
             value={limit}
             onChange={(e) => onLimitChange(parseInt(e.target.value))}
             className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer"
           />
+        </div>
+
+        {/* Hop Distance Slider */}
+        <div className="mb-4">
+          <label className="block text-sm text-gray-400 mb-2">
+            Maximum hops from Jeffrey Epstein: {maxHops === null ? 'Any' : maxHops}
+          </label>
+          <div className="flex items-center gap-2">
+            <input
+              type="range"
+              min="1"
+              max="6"
+              step="1"
+              value={maxHops === null ? 6 : maxHops}
+              onChange={(e) => {
+                const value = parseInt(e.target.value);
+                onMaxHopsChange(value === 6 ? null : value);
+              }}
+              className="flex-1 h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer"
+            />
+          </div>
+          <div className="flex justify-between text-xs text-gray-500 mt-1">
+            <span>1</span>
+            <span>2</span>
+            <span>3</span>
+            <span>4</span>
+            <span>5</span>
+            <span>Any</span>
+          </div>
+        </div>
+
+        {/* Network Density Slider */}
+        <div className="mb-4">
+          <label className="block text-sm text-gray-400 mb-2">
+            Network density threshold: {minDensity}%
+          </label>
+          <input
+            type="range"
+            min="0"
+            max="100"
+            step="10"
+            value={minDensity}
+            onChange={(e) => onMinDensityChange(parseInt(e.target.value))}
+            className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer"
+          />
+          <div className="flex justify-between text-xs text-gray-500 mt-1">
+            <span>0%</span>
+            <span>50%</span>
+            <span>100%</span>
+          </div>
+          <p className="text-xs text-gray-500 mt-1">
+            Show actors with at least this percentage of average connections for their hop distance
+          </p>
         </div>
 
         {/* Time Range Slider */}

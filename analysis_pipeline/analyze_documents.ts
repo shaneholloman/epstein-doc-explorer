@@ -3,7 +3,6 @@
 // Please note: this method uses the agents SDK and assume you are already locally authenticated via claude code via a MAX plan.
 // Running this with the API rather than the max plan will cost about $50 for the 2000 epstein emails
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { query } from '@anthropic-ai/claude-agent-sdk';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import Database from 'better-sqlite3';
@@ -119,11 +118,20 @@ function initDatabase(dbPath: string): Database.Database {
 async function analyzeDocument(
   docId: string,
   filePath: string,
-  content: string
+  content: string,
+  contextPreamble?: string
 ): Promise<AnalysisResult> {
+  const preambleSection = contextPreamble ? `
+**DOCUMENT CONTEXT:**
+${contextPreamble}
+
+` : '';
+
   const analysisPrompt = `You are analyzing a document from a legal/investigative document collection. The document ID is "${docId}".
 
 IMPORTANT: You have ALL the information you need in the document text below. Do NOT attempt to read files, explore directories, or gather additional context. Analyze ONLY the text provided.
+
+${preambleSection}
 
 **CRITICAL IDENTIFICATION RULES:**
 This document may contain communications involving Jeffrey Epstein. He may appear under these identifiers:
@@ -157,8 +165,8 @@ Return ONLY a valid JSON object with the following structure:
   "paragraph_summary": "A detailed paragraph (3-5 sentences) explaining the document's content, context, significance, and key points. Include who is involved, what happened, why it matters, and any important outcomes or implications.",
   "date_range_earliest": "YYYY-MM-DD or YYYY-MM-DDTHH:MM format if dates are visible in the document, otherwise null",
   "date_range_latest": "YYYY-MM-DD or YYYY-MM-DDTHH:MM format if dates are visible in the document, otherwise null",
-  "category": "One of: court_filing, email, letter, memorandum, report, transcript, financial_document, media_article, book_excerpt, photo_caption, mixed_document, other",
-  "content_tags": ["array", "of", "relevant", "document-level", "tags"],
+  "category": "One of: court_filing, email, letter, memorandum, report, transcript, financial_document, media_article, book_excerpt, photo_caption, mixed_document, public record, other",
+  "content_tags": ["array", "of", "relevant", "document-level", "tags"], //aim for 5-10
   "rdf_triples": [
     {
       "timestamp": "YYYY-MM-DD or YYYY-MM-DDTHH:MM if available, otherwise omit this field",
@@ -167,7 +175,7 @@ Return ONLY a valid JSON object with the following structure:
       "target": "PERSON NAME ONLY - not organizations, movies, places (e.g., 'Donald Trump', not 'Donald Trump at party' or '12 Years a Slave')",
       "location": "physical location if mentioned (e.g., 'Mar-a-Lago', 'New York City', 'Palm Beach courthouse'), otherwise omit this field",
       "actor_likely_type": "OPTIONAL - only include if actor is unknown/unnamed/redacted AND there is sufficient evidence to infer their likely type. Type of person - examples include but are not limited to: 'victim', 'witness', 'celebrity', 'political operator', 'staff member', 'law enforcement', 'family member', 'business associate', 'government official'. Use the most specific and appropriate type based on context. Omit entirely if actor is named OR if type cannot be reasonably inferred from context.",
-      "tags": ["array", "of", "specific", "tags", "for", "this", "triple", "describing", "the", "nature", "of", "this", "specific", "interaction"],
+      "tags": ["tags", "for", "this", "triple"], //aim for 3 or less if possible
       "explicit_topic": "short phrase describing the main theme directly evidenced in the surrounding content (e.g., 'biographical facts', 'coordination of business meeting', 'testimony about alleged assault')",
       "implicit_topic": "short phrase describing what the interaction likely relates to, even if not directly stated (e.g., 'relationship cultivation', 'reputation management', 'legal strategy coordination')"
     }
@@ -204,15 +212,15 @@ Guidelines for RDF triples:
 
 **NEW - Triple-level tags:**
 - Each triple should have a "tags" array with specific descriptive tags for THAT INTERACTION
-- Tags should describe the nature, context, or category of the specific interaction
+- Tags should describe the nature or context of the specific interaction, but NOT the document category
 - Be specific and descriptive (use snake_case for multi-word tags)
 - Examples of triple tags:
-  - For "Jeffrey Epstein sent email to Bill Clinton about fundraising": ["email_communication", "political_fundraising", "personal_correspondence"]
-  - For "Jane Doe testified before grand jury regarding sexual assault": ["witness_testimony", "sexual_assault_allegations", "legal_proceedings", "grand_jury"]
+  - For "Jeffrey Epstein sent email to Bill Clinton about fundraising": ["political_fundraising", "personal_correspondence", "VIP"]
+  - For "Jane Doe testified before grand jury regarding sexual assault": ["witness_testimony", "sexual_assault_allegations", "grand_jury"]
   - For "Donald Trump met with Vladimir Putin in Helsinki": ["diplomatic_meeting", "international_relations", "summit", "foreign_policy"]
   - For "John Smith transferred $50,000 to offshore account": ["financial_transactions", "offshore_banking", "money_transfer"]
-- Triple tags can overlap with or be more specific than document-level tags
-- Include 2-6 tags per triple depending on complexity
+- Triple tags should be more specific than document-level tags and should not reproduce document level tags
+- Include 1-4 tags per triple depending on complexity
 
 **NEW - Explicit and Implicit Topics:**
 - Each triple must have both an "explicit_topic" and "implicit_topic" field
@@ -230,10 +238,10 @@ Guidelines for RDF triples:
   - implicit_topic: "evidence gathering for prosecution"
 
 Guidelines for document-level content tags:
-- Be specific and descriptive (good: "financial_transactions", bad: "money")
+- Be specific and descriptive (good: "real_estate_transactions", bad: "money")
 - Use snake_case for multi-word tags
 - Include both broad topics and specific themes
-- Typical tags might include: legal_proceedings, financial_transactions, political_activity, media_coverage, personal_relationships, travel, communications, business_dealings, etc.
+- Typical tags might include: legal_strategy, crisis_response, financial_transactions, financial_advice, political_strategy, damage_control, personal_relationships, travel_planning, etc.
 
 If the document is too fragmentary or unreadable to analyze, still provide your best interpretation and mark uncertainty in the summaries.`;
 
@@ -432,19 +440,35 @@ function saveToDatabase(db: Database.Database, result: AnalysisResult): void {
         continue;
       }
 
-      insertTriple.run(
-        result.doc_id,
-        triple.timestamp || null,
-        triple.actor,
-        triple.action,
-        triple.target,
-        triple.location || null,
-        triple.actor_likely_type || null,
-        JSON.stringify(triple.tags || []),
-        triple.explicit_topic || null,
-        triple.implicit_topic || null,
-        i
-      );
+      // Truncate tags if too large (SQLite parameter limit)
+      let tags = triple.tags || [];
+      if (Array.isArray(tags) && tags.length > 50) {
+        console.warn(`Truncating ${tags.length} tags to 50 for triple in ${result.doc_id}`);
+        tags = tags.slice(0, 50);
+      }
+
+      try {
+        insertTriple.run(
+          result.doc_id,
+          triple.timestamp || null,
+          triple.actor,
+          triple.action,
+          triple.target,
+          triple.location || null,
+          triple.actor_likely_type || null,
+          JSON.stringify(tags),
+          triple.explicit_topic || null,
+          triple.implicit_topic || null,
+          i
+        );
+      } catch (error: any) {
+        // If still too many parameters, skip this triple
+        if (error.message?.includes('Too many parameter')) {
+          console.warn(`Skipping triple in ${result.doc_id} due to parameter limit (${tags.length} tags)`);
+        } else {
+          throw error;
+        }
+      }
     }
   });
 
@@ -454,6 +478,43 @@ function saveToDatabase(db: Database.Database, result: AnalysisResult): void {
     console.error(`Error inserting triples for ${result.doc_id}:`, error);
     throw error;
   }
+}
+
+/**
+ * Check if a filename represents a split document part
+ */
+function isSplitDocument(filename: string): boolean {
+  return /_part\d+\.txt$/.test(filename);
+}
+
+/**
+ * Get the base document ID from a split document filename
+ */
+function getBaseDocId(filename: string): string {
+  return filename.replace(/_part\d+\.txt$/, '');
+}
+
+/**
+ * Get the part number from a split document filename
+ */
+function getPartNumber(filename: string): number | null {
+  const match = filename.match(/_part(\d+)\.txt$/);
+  return match ? parseInt(match[1]) : null;
+}
+
+/**
+ * Get context preamble for split document parts 2+
+ */
+function getContextPreamble(db: Database.Database, baseDocId: string): string | undefined {
+  const part1Analysis = db.prepare(
+    'SELECT category, paragraph_summary FROM documents WHERE doc_id = ?'
+  ).get(baseDocId + '_part1') as { category: string; paragraph_summary: string } | undefined;
+
+  if (!part1Analysis) {
+    return undefined;
+  }
+
+  return `This is a segment of a longer document that was split into multiple parts. The document is a ${part1Analysis.category}. The previous part is described as: ${part1Analysis.paragraph_summary}`;
 }
 
 /**
@@ -484,12 +545,16 @@ async function main() {
 
   // Filter to unprocessed documents only
   const unprocessedFiles = allTextFiles.filter(f => !processedDocs.has(f));
-  const textFiles = unprocessedFiles.slice(0, maxDocs);
+
+  // Separate part1 documents from others
+  const part1Files = unprocessedFiles.filter(f => f.endsWith('_part1.txt'));
+  const otherFiles = unprocessedFiles.filter(f => !f.endsWith('_part1.txt'));
 
   console.log(`Found ${allTextFiles.length} text files total`);
   console.log(`Already processed: ${processedDocs.size}`);
   console.log(`Remaining to analyze: ${unprocessedFiles.length}`);
-  console.log(`Analyzing ${textFiles.length} documents in this run\n`);
+  console.log(`  - Part 1 documents: ${part1Files.length}`);
+  console.log(`  - Other documents: ${otherFiles.length}`);
 
   const results: AnalysisResult[] = [];
   let totalCost = 0;
@@ -497,51 +562,109 @@ async function main() {
   let totalOutputTokens = 0;
   let totalCacheReadTokens = 0;
 
-  // Process documents in parallel batches of 20
   const BATCH_SIZE = 20;
+  let totalProcessed = 0;
 
-  for (let i = 0; i < textFiles.length; i += BATCH_SIZE) {
-    const batch = textFiles.slice(i, i + BATCH_SIZE);
-    console.log(`\nProcessing batch ${Math.floor(i / BATCH_SIZE) + 1} of ${Math.ceil(textFiles.length / BATCH_SIZE)} (${batch.length} documents)...\n`);
+  // Process part1 files first in their own batches
+  if (part1Files.length > 0 && totalProcessed < maxDocs) {
+    const part1ToProcess = part1Files.slice(0, maxDocs);
+    console.log(`\n=== Processing Part 1 Documents First (${part1ToProcess.length} documents) ===\n`);
 
-    const batchPromises = batch.map(async (file) => {
-      const filePath = path.join(dataDir, file);
-      const docId = file.replace('.txt', '');
+    for (let i = 0; i < part1ToProcess.length; i += BATCH_SIZE) {
+      const batch = part1ToProcess.slice(i, i + BATCH_SIZE);
+      console.log(`\nProcessing part1 batch ${Math.floor(i / BATCH_SIZE) + 1} of ${Math.ceil(part1ToProcess.length / BATCH_SIZE)} (${batch.length} documents)...\n`);
 
-      try {
-        // Read document content
-        const content = await fs.readFile(filePath, 'utf-8');
+      const batchPromises = batch.map(async (file) => {
+        const filePath = path.join(dataDir, file);
+        const docId = file.replace('.txt', '');
 
-        // Analyze document
-        const result = await analyzeDocument(docId, filePath, content);
-        return result;
-      } catch (error) {
-        console.error(`Error processing ${file}:`, error);
-        return null;
-      }
-    });
-
-    const batchResults = await Promise.all(batchPromises);
-
-    for (const result of batchResults) {
-      if (result !== null) {
-        results.push(result);
-
-        // Update totals
-        totalCost += result.cost_usd;
-        if (result.usage) {
-          totalInputTokens += result.usage.input_tokens;
-          totalOutputTokens += result.usage.output_tokens;
-          totalCacheReadTokens += result.usage.cache_read_input_tokens || 0;
+        try {
+          const content = await fs.readFile(filePath, 'utf-8');
+          const result = await analyzeDocument(docId, filePath, content);
+          return result;
+        } catch (error) {
+          console.error(`Error processing ${file}:`, error);
+          return null;
         }
+      });
 
-        // Save to database
-        saveToDatabase(db, result);
+      const batchResults = await Promise.all(batchPromises);
 
-        console.log(`✓ ${result.doc_id}: ${result.analysis.category} - ${result.analysis.rdf_triples.length} triples`);
+      for (const result of batchResults) {
+        if (result !== null) {
+          results.push(result);
+          totalCost += result.cost_usd;
+          if (result.usage) {
+            totalInputTokens += result.usage.input_tokens;
+            totalOutputTokens += result.usage.output_tokens;
+            totalCacheReadTokens += result.usage.cache_read_input_tokens || 0;
+          }
+          saveToDatabase(db, result);
+          console.log(`✓ ${result.doc_id}: ${result.analysis.category} - ${result.analysis.rdf_triples.length} triples`);
+          totalProcessed++;
+        }
       }
     }
   }
+
+  // Now process other files (parts 2+, non-split docs) with context enrichment
+  if (otherFiles.length > 0 && totalProcessed < maxDocs) {
+    const remainingSlots = maxDocs - totalProcessed;
+    const otherToProcess = otherFiles.slice(0, remainingSlots);
+    console.log(`\n=== Processing Remaining Documents (${otherToProcess.length} documents) ===\n`);
+
+    for (let i = 0; i < otherToProcess.length; i += BATCH_SIZE) {
+      const batch = otherToProcess.slice(i, i + BATCH_SIZE);
+      console.log(`\nProcessing batch ${Math.floor(i / BATCH_SIZE) + 1} of ${Math.ceil(otherToProcess.length / BATCH_SIZE)} (${batch.length} documents)...\n`);
+
+      const batchPromises = batch.map(async (file) => {
+        const filePath = path.join(dataDir, file);
+        const docId = file.replace('.txt', '');
+
+        try {
+          const content = await fs.readFile(filePath, 'utf-8');
+
+          // Check if this is a split document part 2+ and needs context
+          let contextPreamble: string | undefined;
+          if (isSplitDocument(file)) {
+            const partNum = getPartNumber(file);
+            if (partNum && partNum > 1) {
+              const baseDocId = getBaseDocId(file);
+              contextPreamble = getContextPreamble(db, baseDocId);
+              if (contextPreamble) {
+                console.log(`  ℹ Adding context from part 1 for ${docId}`);
+              }
+            }
+          }
+
+          const result = await analyzeDocument(docId, filePath, content, contextPreamble);
+          return result;
+        } catch (error) {
+          console.error(`Error processing ${file}:`, error);
+          return null;
+        }
+      });
+
+      const batchResults = await Promise.all(batchPromises);
+
+      for (const result of batchResults) {
+        if (result !== null) {
+          results.push(result);
+          totalCost += result.cost_usd;
+          if (result.usage) {
+            totalInputTokens += result.usage.input_tokens;
+            totalOutputTokens += result.usage.output_tokens;
+            totalCacheReadTokens += result.usage.cache_read_input_tokens || 0;
+          }
+          saveToDatabase(db, result);
+          console.log(`✓ ${result.doc_id}: ${result.analysis.category} - ${result.analysis.rdf_triples.length} triples`);
+          totalProcessed++;
+        }
+      }
+    }
+  }
+
+  console.log(`\nTotal documents analyzed in this run: ${totalProcessed}`);
 
   db.close();
 

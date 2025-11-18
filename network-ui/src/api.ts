@@ -16,7 +16,7 @@ export async function fetchTagClusters(): Promise<TagCluster[]> {
   return response.json();
 }
 
-export async function fetchRelationships(limit: number = 500, clusterIds: number[] = [], categories: string[] = [], yearRange?: [number, number], includeUndated: boolean = true, keywords: string = ''): Promise<{ relationships: Relationship[], totalBeforeLimit: number, totalBeforeFilter: number }> {
+export async function fetchRelationships(limit: number = 500, clusterIds: number[] = [], categories: string[] = [], yearRange?: [number, number], includeUndated: boolean = true, keywords: string = '', maxHops?: number | null): Promise<{ relationships: Relationship[], totalBeforeLimit: number, totalBeforeFilter: number }> {
   const params = new URLSearchParams({ limit: limit.toString() });
   if (clusterIds.length > 0) {
     params.append('clusters', clusterIds.join(','));
@@ -32,12 +32,15 @@ export async function fetchRelationships(limit: number = 500, clusterIds: number
   if (keywords.trim()) {
     params.append('keywords', keywords.trim());
   }
+  if (maxHops !== undefined && maxHops !== null) {
+    params.append('maxHops', maxHops.toString());
+  }
   const response = await fetch(`${API_BASE}/relationships?${params}`);
   if (!response.ok) throw new Error('Failed to fetch relationships');
   return response.json();
 }
 
-export async function fetchActorRelationships(name: string, clusterIds: number[] = [], categories: string[] = [], yearRange?: [number, number], includeUndated: boolean = true, keywords: string = ''): Promise<{ relationships: Relationship[], totalBeforeFilter: number }> {
+export async function fetchActorRelationships(name: string, clusterIds: number[] = [], categories: string[] = [], yearRange?: [number, number], includeUndated: boolean = true, keywords: string = '', maxHops?: number | null): Promise<{ relationships: Relationship[], totalBeforeFilter: number }> {
   const params = new URLSearchParams();
   if (clusterIds.length > 0) {
     params.append('clusters', clusterIds.join(','));
@@ -52,6 +55,9 @@ export async function fetchActorRelationships(name: string, clusterIds: number[]
   params.append('includeUndated', includeUndated.toString());
   if (keywords.trim()) {
     params.append('keywords', keywords.trim());
+  }
+  if (maxHops !== undefined && maxHops !== null) {
+    params.append('maxHops', maxHops.toString());
   }
   const url = `${API_BASE}/actor/${encodeURIComponent(name)}/relationships${params.toString() ? '?' + params : ''}`;
   const response = await fetch(url);

@@ -34,7 +34,7 @@ function initAliasTable() {
   `);
 }
 
-// Get all actors excluding unknowns
+// Get all actors excluding unknowns and already-aliased names
 function getAllActors(): Actor[] {
   const stmt = db.prepare(`
     SELECT
@@ -45,6 +45,7 @@ function getAllActors(): Actor[] {
       AND actor NOT LIKE 'redacted%'
       AND actor NOT LIKE 'Unknown%'
       AND actor NOT LIKE 'Redacted%'
+      AND actor NOT IN (SELECT original_name FROM entity_aliases)
     GROUP BY actor
 
     UNION
@@ -57,6 +58,7 @@ function getAllActors(): Actor[] {
       AND target NOT LIKE 'redacted%'
       AND target NOT LIKE 'Unknown%'
       AND target NOT LIKE 'Redacted%'
+      AND target NOT IN (SELECT original_name FROM entity_aliases)
     GROUP BY target
   `);
 
@@ -213,8 +215,13 @@ async function main() {
   console.log('✓ Entity alias table ready\n');
 
   console.log('Loading actors from database...');
-  const actors = getAllActors();
-  console.log(`Found ${actors.length} unique actors (excluding unknown/redacted)\n`);
+  const allActors = getAllActors();
+  console.log(`Found ${allActors.length} unique actors (excluding unknown/redacted)`);
+
+  // Filter to only actors with >= 5 occurrences
+  const MIN_OCCURRENCES = 5;
+  const actors = allActors.filter(a => a.count >= MIN_OCCURRENCES);
+  console.log(`Filtered to ${actors.length} actors with >= ${MIN_OCCURRENCES} occurrences (skipped ${allActors.length - actors.length} low-frequency names)\n`);
 
   console.log('Generating candidate groups...');
   const candidateGroups = generateCandidateGroups(actors);

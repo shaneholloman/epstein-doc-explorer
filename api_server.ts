@@ -151,6 +151,14 @@ function validateKeywords(keywords: any): string[] {
     .slice(0, 20); // Limit to 20 keywords max
 }
 
+function validateMaxHops(maxHops: any): number | null {
+  if (!maxHops) return null; // No hop filter
+  if (maxHops === 'any') return null; // "any" means no limit
+  const parsed = parseInt(maxHops);
+  if (isNaN(parsed) || parsed < 1 || parsed > 10) return null;
+  return parsed;
+}
+
 // BM25 scoring function for fuzzy text matching
 function calculateBM25Score(text: string, keywords: string[]): number {
   if (!text || keywords.length === 0) return 0;
@@ -195,6 +203,7 @@ app.get('/api/relationships', (req, res) => {
     const yearRange = validateYearRange(req.query.yearMin, req.query.yearMax);
     const includeUndated = req.query.includeUndated !== 'false'; // Default to true
     const keywords = validateKeywords(req.query.keywords);
+    const maxHops = validateMaxHops(req.query.maxHops);
     const EPSTEIN_NAME = 'Jeffrey Epstein';
 
     // Build set of selected cluster IDs for filtering
@@ -223,9 +232,22 @@ app.get('/api/relationships', (req, res) => {
       yearParams = [minYear.toString(), maxYear.toString()];
     }
 
+    // Build WHERE clause for hop distance using canonical_entities table
+    let hopJoins = '';
+    let hopWhere = '';
+    let hopParams: number[] = [];
+    if (maxHops !== null) {
+      hopJoins = `
+      LEFT JOIN canonical_entities ce_actor ON COALESCE(ea_actor.canonical_name, rt.actor) = ce_actor.canonical_name
+      LEFT JOIN canonical_entities ce_target ON COALESCE(ea_target.canonical_name, rt.target) = ce_target.canonical_name`;
+      hopWhere = `AND ce_actor.hop_distance_from_principal <= ?
+                  AND ce_target.hop_distance_from_principal <= ?`;
+      hopParams = [maxHops, maxHops];
+    }
+
     // Fetch relationships with alias resolution and triple_tags
     // Apply database-level LIMIT to prevent memory exhaustion
-    const MAX_DB_LIMIT = 50000; // Maximum rows to fetch from database
+    const MAX_DB_LIMIT = 100000; // Maximum rows to fetch from database
     const allRelationships = db.prepare(`
       SELECT
         rt.id,
@@ -240,13 +262,15 @@ app.get('/api/relationships', (req, res) => {
       FROM rdf_triples rt
       LEFT JOIN entity_aliases ea_actor ON rt.actor = ea_actor.original_name
       LEFT JOIN entity_aliases ea_target ON rt.target = ea_target.original_name
+      ${hopJoins}
       LEFT JOIN documents d ON rt.doc_id = d.doc_id
       WHERE (rt.timestamp IS NULL OR rt.timestamp >= '1970-01-01')
       ${categoryWhere}
       ${yearWhere}
+      ${hopWhere}
       ORDER BY rt.timestamp
       LIMIT ?
-    `).all(...categoryParams, ...yearParams, MAX_DB_LIMIT) as Array<{
+    `).all(...categoryParams, ...yearParams, ...hopParams, MAX_DB_LIMIT) as Array<{
       id: number;
       doc_id: string;
       timestamp: string | null;
@@ -315,24 +339,55 @@ app.get('/api/relationships', (req, res) => {
       }
     }
 
-    // Assign distance score to each relationship (minimum distance of the two actors)
-    const relationshipsWithDistance = filteredRelationships.map(rel => {
-      const actorDistance = distances.get(rel.actor) ?? Infinity;
-      const targetDistance = distances.get(rel.target) ?? Infinity;
-      const minDistance = Math.min(actorDistance, targetDistance);
+    // First, deduplicate edges by grouping relationships between same actor pairs
+    const edgeMap = new Map<string, any[]>();
+
+    filteredRelationships.forEach(rel => {
+      const edgeKey = `${rel.actor}|||${rel.target}`;
+      if (!edgeMap.has(edgeKey)) {
+        edgeMap.set(edgeKey, []);
+      }
+      edgeMap.get(edgeKey)!.push(rel);
+    });
+
+    // Convert to array of unique edges (each edge represents all relationships between that pair)
+    const uniqueEdges = Array.from(edgeMap.entries()).map(([key, rels]) => ({
+      edgeKey: key,
+      relationships: rels,
+      // Use first relationship as representative
+      representative: rels[0]
+    }));
+
+    // Calculate node degrees based on UNIQUE edges
+    const nodeDegrees = new Map<string, number>();
+    uniqueEdges.forEach(edge => {
+      const rel = edge.representative;
+      nodeDegrees.set(rel.actor, (nodeDegrees.get(rel.actor) || 0) + 1);
+      nodeDegrees.set(rel.target, (nodeDegrees.get(rel.target) || 0) + 1);
+    });
+
+    // Assign density score to each unique edge
+    const edgesWithDensity = uniqueEdges.map(edge => {
+      const rel = edge.representative;
+      const actorDegree = nodeDegrees.get(rel.actor) || 0;
+      const targetDegree = nodeDegrees.get(rel.target) || 0;
+      const densityScore = actorDegree + targetDegree;
 
       return {
-        ...rel,
-        _distance: minDistance
+        ...edge,
+        _density: densityScore
       };
     });
 
-    // Sort by distance (closest first) and take top limit
-    relationshipsWithDistance.sort((a, b) => a._distance - b._distance);
-    const prunedRelationships = relationshipsWithDistance.slice(0, limit);
+    // Sort unique edges by density (highest first) and take top limit
+    edgesWithDensity.sort((a, b) => b._density - a._density);
+    const prunedEdges = edgesWithDensity.slice(0, limit);
 
-    // Remove the _distance field before sending
-    const relationships = prunedRelationships.map(({ _distance, triple_tags, ...rel }) => ({
+    // Expand back to all relationships for the kept edges
+    const prunedRelationships = prunedEdges.flatMap(edge => edge.relationships);
+
+    // Parse tags before sending
+    const relationships = prunedRelationships.map(({ triple_tags, ...rel }) => ({
       ...rel,
       tags: triple_tags ? JSON.parse(triple_tags) : []
     }));
@@ -340,7 +395,7 @@ app.get('/api/relationships', (req, res) => {
     // Return both the relationships and metadata
     res.json({
       relationships,
-      totalBeforeLimit: filteredRelationships.length,
+      totalBeforeLimit: uniqueEdges.length, // Count of unique edges, not total triples
       totalBeforeFilter: allRelationships.length
     });
   } catch (error) {
@@ -364,6 +419,7 @@ app.get('/api/actor/:name/relationships', (req, res) => {
     const yearRange = validateYearRange(req.query.yearMin, req.query.yearMax);
     const includeUndated = req.query.includeUndated !== 'false'; // Default to true
     const keywords = validateKeywords(req.query.keywords);
+    const maxHops = validateMaxHops(req.query.maxHops);
 
     // Build set of selected cluster IDs and categories for filtering
     const selectedClusterIds = new Set<number>(clusterIds);
@@ -412,6 +468,19 @@ app.get('/api/actor/:name/relationships', (req, res) => {
       yearParams = [minYear.toString(), maxYear.toString()];
     }
 
+    // Build WHERE clause for hop distance using canonical_entities table
+    let hopJoins = '';
+    let hopWhere = '';
+    let hopParams: number[] = [];
+    if (maxHops !== null) {
+      hopJoins = `
+      LEFT JOIN canonical_entities ce_actor ON COALESCE(ea_actor.canonical_name, rt.actor) = ce_actor.canonical_name
+      LEFT JOIN canonical_entities ce_target ON COALESCE(ea_target.canonical_name, rt.target) = ce_target.canonical_name`;
+      hopWhere = `AND ce_actor.hop_distance_from_principal <= ?
+                  AND ce_target.hop_distance_from_principal <= ?`;
+      hopParams = [maxHops, maxHops];
+    }
+
     const allRelationships = db.prepare(`
       SELECT
         rt.id,
@@ -426,13 +495,15 @@ app.get('/api/actor/:name/relationships', (req, res) => {
       FROM rdf_triples rt
       LEFT JOIN entity_aliases ea_actor ON rt.actor = ea_actor.original_name
       LEFT JOIN entity_aliases ea_target ON rt.target = ea_target.original_name
+      ${hopJoins}
       LEFT JOIN documents d ON rt.doc_id = d.doc_id
       WHERE (rt.actor IN (${placeholders}) OR rt.target IN (${placeholders}))
         AND (rt.timestamp IS NULL OR rt.timestamp >= '1970-01-01')
         ${categoryWhere}
         ${yearWhere}
+        ${hopWhere}
       ORDER BY rt.timestamp
-    `).all(...allNames, ...allNames, ...categoryParams, ...yearParams) as Array<{
+    `).all(...allNames, ...allNames, ...categoryParams, ...yearParams, ...hopParams) as Array<{
       id: number;
       doc_id: string;
       timestamp: string | null;

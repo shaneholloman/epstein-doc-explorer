@@ -19,11 +19,13 @@ function App() {
   const [selectedActor, setSelectedActor] = useState<string | null>(null);
   const [actorRelationships, setActorRelationships] = useState<Relationship[]>([]);
   const [actorTotalBeforeFilter, setActorTotalBeforeFilter] = useState<number>(0);
-  const [limit, setLimit] = useState(isMobile ? 5000 : 15000);
+  const [limit, setLimit] = useState(isMobile ? 3000 : 9600);
+  const [maxHops, setMaxHops] = useState<number | null>(3); // Default 3 hops
+  const [minDensity, setMinDensity] = useState(50); // Default 50% density threshold
   const [enabledClusterIds, setEnabledClusterIds] = useState<Set<number>>(new Set());
   const [enabledCategories, setEnabledCategories] = useState<Set<string>>(new Set());
   const [yearRange, setYearRange] = useState<[number, number]>([1980, 2025]);
-  const [includeUndated, setIncludeUndated] = useState(true);
+  const [includeUndated, setIncludeUndated] = useState(false);
   const [keywords, setKeywords] = useState('');
   const [showWelcome, setShowWelcome] = useState(() => {
     // Check if user has seen the welcome message before
@@ -53,12 +55,12 @@ function App() {
     }
   }, [stats]);
 
-  // Load data when limit, enabled clusters, enabled categories, year range, includeUndated, or keywords change (but only after clusters are loaded)
+  // Load data when limit, enabled clusters, enabled categories, year range, includeUndated, keywords, or maxHops change (but only after clusters are loaded)
   useEffect(() => {
     if (tagClusters.length > 0) {
       loadData();
     }
-  }, [limit, enabledClusterIds, enabledCategories, yearRange, includeUndated, keywords, tagClusters.length]);
+  }, [limit, enabledClusterIds, enabledCategories, yearRange, includeUndated, keywords, maxHops, tagClusters.length]);
 
   const loadData = async () => {
     try {
@@ -67,7 +69,7 @@ function App() {
       const categories = Array.from(enabledCategories);
       const [statsData, relationshipsResponse] = await Promise.all([
         fetchStats(),
-        fetchRelationships(limit, clusterIds, categories, yearRange, includeUndated, keywords)
+        fetchRelationships(limit, clusterIds, categories, yearRange, includeUndated, keywords, maxHops)
       ]);
       setStats(statsData);
       setRelationships(relationshipsResponse.relationships);
@@ -115,7 +117,7 @@ function App() {
     setShowWelcome(false);
   }, []);
 
-  // Fetch actor-specific relationships when an actor is selected or clusters/categories/year range/includeUndated/keywords change
+  // Fetch actor-specific relationships when an actor is selected or clusters/categories/year range/includeUndated/keywords/maxHops change
   useEffect(() => {
     if (!selectedActor) {
       setActorRelationships([]);
@@ -127,7 +129,7 @@ function App() {
       try {
         const clusterIds = Array.from(enabledClusterIds);
         const categories = Array.from(enabledCategories);
-        const response = await fetchActorRelationships(selectedActor, clusterIds, categories, yearRange, includeUndated, keywords);
+        const response = await fetchActorRelationships(selectedActor, clusterIds, categories, yearRange, includeUndated, keywords, maxHops);
         setActorRelationships(response.relationships);
         setActorTotalBeforeFilter(response.totalBeforeFilter);
       } catch (error) {
@@ -138,7 +140,7 @@ function App() {
     };
 
     loadActorRelationships();
-  }, [selectedActor, enabledClusterIds, enabledCategories, yearRange, includeUndated, keywords]);
+  }, [selectedActor, enabledClusterIds, enabledCategories, yearRange, includeUndated, keywords, maxHops]);
 
   return (
     <div className="flex h-screen bg-gray-900 text-white">
@@ -150,6 +152,10 @@ function App() {
           onActorSelect={setSelectedActor}
           limit={limit}
           onLimitChange={setLimit}
+          maxHops={maxHops}
+          onMaxHopsChange={setMaxHops}
+          minDensity={minDensity}
+          onMinDensityChange={setMinDensity}
           tagClusters={tagClusters}
           enabledClusterIds={enabledClusterIds}
           onToggleCluster={toggleCluster}
@@ -178,6 +184,7 @@ function App() {
             relationships={relationships}
             selectedActor={selectedActor}
             onActorClick={handleActorClick}
+            minDensity={minDensity}
           />
         )}
       </div>

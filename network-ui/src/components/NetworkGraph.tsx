@@ -6,12 +6,14 @@ interface NetworkGraphProps {
   relationships: Relationship[];
   selectedActor: string | null;
   onActorClick: (actorName: string) => void;
+  minDensity: number;
 }
 
 export default function NetworkGraph({
   relationships,
   selectedActor,
-  onActorClick
+  onActorClick,
+  minDensity
 }: NetworkGraphProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const simulationRef = useRef<d3.Simulation<GraphNode, GraphLink> | null>(null);
@@ -24,6 +26,9 @@ export default function NetworkGraph({
     const nodeMap = new Map<string, GraphNode>();
     const links: GraphLink[] = [];
     const EPSTEIN_NAME = 'Jeffrey Epstein';
+
+    // First pass: build complete graph and deduplicate edges
+    const edgeMap = new Map<string, GraphLink & { count: number }>();
 
     relationships.forEach((rel) => {
       // Add actor node
@@ -52,15 +57,26 @@ export default function NetworkGraph({
         node.val += 1;
       }
 
-      // Add link
-      links.push({
-        source: rel.actor,
-        target: rel.target,
-        action: rel.action,
-        location: rel.location || undefined,
-        timestamp: rel.timestamp || undefined
-      });
+      // Deduplicate edges: Create key for unique edge pairs
+      const edgeKey = `${rel.actor}|||${rel.target}`;
+
+      if (!edgeMap.has(edgeKey)) {
+        edgeMap.set(edgeKey, {
+          source: rel.actor,
+          target: rel.target,
+          action: rel.action,
+          location: rel.location || undefined,
+          timestamp: rel.timestamp || undefined,
+          count: 1
+        });
+      } else {
+        // Increment count for duplicate edge
+        edgeMap.get(edgeKey)!.count += 1;
+      }
     });
+
+    // Convert edge map to array
+    links.push(...Array.from(edgeMap.values()));
 
     // BFS to calculate distances from Jeffrey Epstein
     const distances = new Map<string, number>();
@@ -114,8 +130,55 @@ export default function NetworkGraph({
 
     const maxDirectToEpstein = Math.max(...Array.from(directConnectionsToEpstein.values()), 1);
 
+    // Calculate average connections per hop distance for density filtering
+    const connectionsByHop = new Map<number, number[]>();
+    for (const node of nodeMap.values()) {
+      const hopDistance = distances.get(node.id) ?? Infinity;
+      if (hopDistance !== Infinity) {
+        if (!connectionsByHop.has(hopDistance)) {
+          connectionsByHop.set(hopDistance, []);
+        }
+        connectionsByHop.get(hopDistance)!.push(node.val);
+      }
+    }
+
+    const averageByHop = new Map<number, number>();
+    for (const [hop, connections] of connectionsByHop) {
+      const avg = connections.reduce((a, b) => a + b, 0) / connections.length;
+      averageByHop.set(hop, avg);
+    }
+
+    // Filter nodes by density threshold (percentage of average for their hop distance)
+    const densityThreshold = minDensity / 100;
+    const nodesToKeep = new Set<string>();
+
+    // Always keep Epstein
+    nodesToKeep.add(EPSTEIN_NAME);
+
+    // Keep nodes above density threshold
+    for (const node of nodeMap.values()) {
+      const hopDistance = distances.get(node.id) ?? Infinity;
+      const avgForHop = averageByHop.get(hopDistance);
+
+      if (avgForHop !== undefined) {
+        const threshold = avgForHop * densityThreshold;
+        if (node.val >= threshold) {
+          nodesToKeep.add(node.id);
+        }
+      }
+    }
+
+    // Filter links to only include nodes we're keeping
+    const filteredLinks = links.filter(link => {
+      const sourceId = typeof link.source === 'string' ? link.source : link.source.id;
+      const targetId = typeof link.target === 'string' ? link.target : link.target.id;
+      return nodesToKeep.has(sourceId) && nodesToKeep.has(targetId);
+    });
+
     // Color nodes based on direct connections to Epstein and distance
-    const nodes = Array.from(nodeMap.values()).map(node => {
+    const nodes = Array.from(nodeMap.values())
+      .filter(node => nodesToKeep.has(node.id))
+      .map(node => {
       const distance = distances.get(node.id) ?? Infinity;
       const directCount = directConnectionsToEpstein.get(node.id) || 0;
       let color: string;
@@ -147,9 +210,9 @@ export default function NetworkGraph({
 
     return {
       nodes,
-      links
+      links: filteredLinks
     };
-  }, [relationships]);
+  }, [relationships, minDensity]);
 
   useEffect(() => {
     if (!svgRef.current) return;
@@ -263,7 +326,7 @@ export default function NetworkGraph({
       .attr('r', (d) => radiusScale(d.val))
       .attr('fill', (d) => d.color)
       .attr('stroke', '#fff')
-      .attr('stroke-width', 2)
+      .attr('stroke-width', 1)
       .style('cursor', 'pointer')
       .on('click', (event, d) => {
         event.stopPropagation();
@@ -310,8 +373,11 @@ export default function NetworkGraph({
     });
 
     link.on('mouseover', (event, d) => {
-      const linkData = d as GraphLink;
-      let html = `<strong>${linkData.action}</strong>`;
+      const linkData = d as GraphLink & { count?: number };
+      const count = linkData.count || 1;
+      let html = count > 1
+        ? `<strong>${count} relationships</strong><br/>${linkData.action}`
+        : `<strong>${linkData.action}</strong>`;
       if (linkData.location) html += `<br/>📍 ${linkData.location}`;
       if (linkData.timestamp) html += `<br/>📅 ${linkData.timestamp}`;
       tooltip
